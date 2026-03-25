@@ -6,74 +6,86 @@ export interface Modifier {
 }
 
 export interface CartItem {
-  cartItemId: string; // Unique ID so "Latte + Oat Milk" doesn't merge with a regular "Latte"
-  id: string; // Product ID
+  cartItemId: string;
+  id: string;
   name: string;
-  base_price: number;
+  base_price: number;   // final price per unit including modifiers
   quantity: number;
   modifiers: Modifier[];
+  note?: string;        // special instructions
 }
 
 interface CartStore {
   cart: CartItem[];
-  discount: number; // Percentage (e.g., 0.20 for 20%)
+  discount: number;
   subtotal: number;
   total: number;
   addItem: (product: any, modifiers: Modifier[]) => void;
   removeItem: (cartItemId: string) => void;
+  updateQty: (cartItemId: string, newQty: number) => void;
   setDiscount: (percent: number) => void;
   clearCart: () => void;
 }
 
+function recalc(cart: CartItem[], discount: number) {
+  const subtotal = cart.reduce((s, i) => s + i.base_price * i.quantity, 0);
+  const total    = subtotal * (1 - discount);
+  return { subtotal, total };
+}
+
 export const useCart = create<CartStore>((set) => ({
-  cart: [],
+  cart:     [],
   discount: 0,
   subtotal: 0,
-  total: 0,
-  
+  total:    0,
+
   addItem: (product, modifiers = []) => set((state) => {
-    // Calculate price of item + its modifiers
-    const modifierTotal = modifiers.reduce((sum, mod) => sum + mod.price, 0);
-    const itemFinalPrice = product.base_price + modifierTotal;
-    
-    // Create a unique string based on modifiers so identical custom drinks stack, but different ones don't
-    const modifierString = modifiers.map(m => m.name).sort().join(',');
-    const uniqueCartId = `${product.id}-${modifierString}`;
+    const modTotal      = modifiers.reduce((s, m) => s + m.price, 0);
+    const finalPrice    = (product.unitPrice ?? product.base_price ?? product.price ?? 0) + modTotal;
+    const modStr        = modifiers.map(m => m.name).sort().join(',');
+    const noteStr       = product.note ?? '';
+    const uniqueCartId  = `${product.id}-${modStr}-${noteStr}`;
 
-    const existingIndex = state.cart.findIndex(i => i.cartItemId === uniqueCartId);
-    let newCart = [...state.cart];
+    const existingIdx = state.cart.findIndex(i => i.cartItemId === uniqueCartId);
+    const newCart     = [...state.cart];
 
-    if (existingIndex >= 0) {
-      newCart[existingIndex].quantity += 1;
+    if (existingIdx >= 0) {
+      newCart[existingIdx] = { ...newCart[existingIdx], quantity: newCart[existingIdx].quantity + 1 };
     } else {
       newCart.push({
         cartItemId: uniqueCartId,
-        id: product.id,
-        name: product.name,
-        base_price: itemFinalPrice, // Store the price including modifiers
-        quantity: 1,
-        modifiers: modifiers
+        id:         product.id,
+        name:       product.name,
+        base_price: finalPrice,
+        quantity:   1,
+        modifiers,
+        note:       product.note ?? undefined,
       });
     }
 
-    const newSubtotal = newCart.reduce((sum, item) => sum + (item.base_price * item.quantity), 0);
-    const newTotal = newSubtotal * (1 - state.discount);
-
-    return { cart: newCart, subtotal: newSubtotal, total: newTotal };
+    return { cart: newCart, ...recalc(newCart, state.discount) };
   }),
 
   removeItem: (cartItemId) => set((state) => {
     const newCart = state.cart.filter(i => i.cartItemId !== cartItemId);
-    const newSubtotal = newCart.reduce((sum, item) => sum + (item.base_price * item.quantity), 0);
-    const newTotal = newSubtotal * (1 - state.discount);
-    
-    return { cart: newCart, subtotal: newSubtotal, total: newTotal };
+    return { cart: newCart, ...recalc(newCart, state.discount) };
   }),
 
-  setDiscount: (percent) => set((state) => {
-    const newTotal = state.subtotal * (1 - percent);
-    return { discount: percent, total: newTotal };
+  updateQty: (cartItemId, newQty) => set((state) => {
+    if (newQty < 1) {
+      const newCart = state.cart.filter(i => i.cartItemId !== cartItemId);
+      return { cart: newCart, ...recalc(newCart, state.discount) };
+    }
+    const newCart = state.cart.map(i =>
+      i.cartItemId === cartItemId ? { ...i, quantity: newQty } : i
+    );
+    return { cart: newCart, ...recalc(newCart, state.discount) };
   }),
+
+  setDiscount: (percent) => set((state) => ({
+    discount: percent,
+    total:    state.subtotal * (1 - percent),
+  })),
 
   clearCart: () => set({ cart: [], subtotal: 0, total: 0, discount: 0 }),
 }));

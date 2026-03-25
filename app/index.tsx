@@ -7,7 +7,8 @@ export default function EntryPoint() {
   if (currentUser) {
     // Route based on role!
     if (currentUser.role === 'manager') {
-      return <Redirect href="/admin/index" />;
+      // Expo Router maps app/admin/index.tsx to just "/admin"
+      return <Redirect href="/admin" />;
     }
     return <Redirect href="/pos" />;
   }
