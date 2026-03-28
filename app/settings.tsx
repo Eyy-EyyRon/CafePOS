@@ -4,7 +4,7 @@ import {
   Image, ActivityIndicator, Alert, SafeAreaView, StatusBar, Platform 
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import { supabase } from '../lib/supabase';
+import { supabase } from '../.vscode/lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system/legacy'; // <-- Fix is here!

@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { supabase } from '../lib/supabase';
+import { supabase } from '../.vscode/lib/supabase';
 import { useAuth, UserProfile } from '../hooks/useAuth';
 import { useRouter } from 'expo-router';
 

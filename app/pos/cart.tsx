@@ -6,18 +6,23 @@ import {
 } from 'react-native';
 import { useCart } from '../../hooks/useCart';
 import { useAuth } from '../../hooks/useAuth';
-import { supabase } from '../../lib/supabase';
-import { submitOrder, syncOutbox } from '../../lib/syncEngine';
-import * as Network from 'expo-network';
+import { supabase } from '../../.vscode/lib/supabase';
+import { submitOrder, syncOutbox } from '../../.vscode/lib/syncEngine'; 
+import * as Network from 'expo-network'; 
 import { useRouter } from 'expo-router';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { useKeepAwake } from 'expo-keep-awake'; 
+import AsyncStorage from '@react-native-async-storage/async-storage'; // ✨ Added for offline caching
 import {
   Trash2, ChevronLeft, Tag, X, Check,
   Banknote, Smartphone, CreditCard, Plus, Minus,
   ShoppingBag, AlertTriangle, CheckCircle, Printer, Share,
-  WifiOff, Lock // <-- Added Lock Icon for Auth
+  WifiOff, Lock,
+  // ── SVGs for Items/Modifiers ──
+  Coffee, IceCream, CupSoda, Croissant, 
+  Droplet, Snowflake, Cloud, Flame, 
+  Leaf, Sparkles, GlassWater, NotebookPen
 } from 'lucide-react-native';
 
 const { width: W, height: H } = Dimensions.get('window');
@@ -45,33 +50,75 @@ const C = {
 
 type PayMethod = 'cash' | 'gcash' | 'maya' | 'card';
 type Discount = { id: string; name: string; percentage: number };
-type AuthAction = { type: 'apply'; pct: number } | { type: 'add_new' };
 
 // ─────────────────────────────────────────────
-// HTML RECEIPT GENERATOR
+// SVG HELPER
+// ─────────────────────────────────────────────
+export function ModIcon({ name, size, color, style }: { name: string, size: number, color: string, style?: any }) {
+  const n = name ? name.toLowerCase() : '';
+  
+  let Icon = Sparkles;
+  if (n.includes('milk') || n.includes('oat') || n.includes('soy') || n.includes('almond')) Icon = GlassWater;
+  else if (n.includes('sugar') || n.includes('syrup') || n.includes('sweet') || n.includes('caramel') || n.includes('vanilla')) Icon = Droplet;
+  else if (n.includes('ice') || n.includes('cold')) Icon = Snowflake;
+  else if (n.includes('shot') || n.includes('espresso') || n.includes('coffee') || n.includes('roast')) Icon = Coffee;
+  else if (n.includes('cream') || n.includes('whip') || n.includes('foam')) Icon = Cloud;
+  else if (n.includes('hot') || n.includes('warm') || n.includes('extra hot')) Icon = Flame;
+  else if (n.includes('decaf')) Icon = Leaf;
+  else if (n.includes('size') || n.includes('large') || n.includes('small') || n.includes('medium') || n.includes('grande') || n.includes('venti')) Icon = CupSoda;
+
+  return (
+    <View style={style}>
+      <Icon size={size} color={color} strokeWidth={1.5} />
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────
+// HTML RECEIPT GENERATOR (NOW DYNAMIC)
 // ─────────────────────────────────────────────
 const generateReceiptHTML = (
-  orderNum: string, items: any[], subtotal: number, discountAmount: number, total: number, method: PayMethod, baristaName: string, isOffline: boolean
+  orderNum: string, items: any[], subtotal: number, discountAmount: number, total: number, method: PayMethod, baristaName: string, isOffline: boolean, discountLabel: string,
+  storeSettings: any // ✨ NEW: Pass store settings here
 ) => {
   const methodLabels: Record<PayMethod, string> = { cash: 'Cash', gcash: 'GCash', maya: 'Maya', card: 'Card' };
+  
+  // Dynamic Store Variables (with fallbacks)
+  const storeName = storeSettings?.store_name || 'CREMA';
+  const storeTagline = storeSettings?.tagline || 'Coffee & Ice Cream';
+  const storeAddress = storeSettings?.address || 'Zamboanga City, PH';
+  const storePhone = storeSettings?.phone ? `<div class="sub">Tel: ${storeSettings.phone}</div>` : '';
+  const storeTin = storeSettings?.tin ? `<div class="sub">TIN: ${storeSettings.tin}</div>` : '';
+  const storeFooter = (storeSettings?.receipt_footer || 'Thank you for your visit!\nPlease come again.').replace(/\n/g, '<br>');
+
   let itemsHTML = items.map(item => {
     let modsHTML = '';
     if (item.modifiers && item.modifiers.length > 0) {
       modsHTML = `<div class="mods">${item.modifiers.map((m: any) => `+ ${m.name}`).join('<br>')}</div>`;
     }
+    const lineTotal = item.base_price * (item.quantity ?? 1);
     return `
       <div class="item-row">
         <div class="item-qty">${item.quantity ?? 1}x</div>
-        <div class="item-name">${item.name}${modsHTML}</div>
-        <div class="item-price">P${(item.base_price * (item.quantity ?? 1)).toFixed(2)}</div>
+        <div class="item-name">
+          ${item.name}
+          ${modsHTML}
+        </div>
+        <div class="item-price">P${lineTotal.toFixed(2)}</div>
       </div>
     `;
   }).join('');
 
   let discountHTML = '';
   if (discountAmount > 0) {
-    discountHTML = `<div class="totals-row discount"><span>Discount</span><span>- P${discountAmount.toFixed(2)}</span></div>`;
+    discountHTML = `
+      <div class="totals-row discount">
+        <span>Discount (${discountLabel})</span>
+        <span>- P${discountAmount.toFixed(2)}</span>
+      </div>
+    `;
   }
+
   const offlineMarker = isOffline ? `<div class="sub" style="margin-top: 5px;">* OFFLINE SYNC PENDING *</div>` : '';
 
   return `
@@ -80,52 +127,89 @@ const generateReceiptHTML = (
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no" />
         <style>
           @page { margin: 0; size: 80mm auto; }
-          body { font-family: 'Courier New', Courier, monospace; width: 80mm; margin: 0; padding: 10px 15px; background: white; color: black; box-sizing: border-box; }
+          body { 
+            font-family: 'Courier New', Courier, monospace; 
+            width: 80mm; 
+            margin: 0; 
+            padding: 10px 15px; 
+            background: white; 
+            color: black;
+            box-sizing: border-box;
+          }
           .header { text-align: center; margin-bottom: 20px; }
           .logo { font-size: 24px; font-weight: bold; margin-bottom: 5px; }
           .sub { font-size: 12px; margin-bottom: 2px; }
           .divider { border-bottom: 1px dashed black; margin: 15px 0; }
+          
           .info-row { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+          
           .item-row { display: flex; font-size: 14px; margin-bottom: 8px; align-items: flex-start; }
           .item-qty { width: 25px; font-weight: bold; }
           .item-name { flex: 1; font-weight: bold; padding-right: 10px; }
           .mods { font-size: 11px; font-weight: normal; margin-top: 2px; padding-left: 5px; }
           .item-price { width: 60px; text-align: right; }
+          
           .totals { margin-top: 20px; }
           .totals-row { display: flex; justify-content: space-between; font-size: 14px; margin-bottom: 5px; }
           .discount { color: #555; }
           .grand-total { font-size: 18px; font-weight: bold; margin-top: 10px; border-top: 2px solid black; padding-top: 10px; }
+          
           .footer { text-align: center; margin-top: 30px; font-size: 12px; }
         </style>
       </head>
       <body>
         <div class="header">
-          <div class="logo">CREMA</div>
-          <div class="sub">Coffee & Ice Cream</div>
-          <div class="sub">Zamboanga City, PH</div>
+          <div class="logo">${storeName}</div>
+          ${storeTagline ? `<div class="sub">${storeTagline}</div>` : ''}
+          ${storeAddress ? `<div class="sub">${storeAddress}</div>` : ''}
+          ${storePhone}
+          ${storeTin}
           ${offlineMarker}
         </div>
-        <div class="info-row"><span>Order #: ${orderNum}</span><span>${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span></div>
-        <div class="info-row"><span>Barista: ${baristaName}</span><span>${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span></div>
-        <div class="divider"></div>
-        ${itemsHTML}
-        <div class="divider"></div>
-        <div class="totals">
-          <div class="totals-row"><span>Subtotal</span><span>P${subtotal.toFixed(2)}</span></div>
-          ${discountHTML}
-          <div class="totals-row grand-total"><span>TOTAL</span><span>P${total.toFixed(2)}</span></div>
-          <div class="totals-row" style="margin-top: 10px; font-size: 12px;"><span>Payment Method</span><span>${methodLabels[method]}</span></div>
+        
+        <div class="info-row">
+          <span>Order #: ${orderNum}</span>
+          <span>${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span>
         </div>
-        <div class="footer"><p>Thank you for your visit!</p><p>Please come again.</p></div>
+        <div class="info-row">
+          <span>Barista: ${baristaName}</span>
+          <span>${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}</span>
+        </div>
+        
+        <div class="divider"></div>
+        
+        ${itemsHTML}
+        
+        <div class="divider"></div>
+        
+        <div class="totals">
+          <div class="totals-row">
+            <span>Subtotal</span>
+            <span>P${subtotal.toFixed(2)}</span>
+          </div>
+          ${discountHTML}
+          <div class="totals-row grand-total">
+            <span>TOTAL</span>
+            <span>P${total.toFixed(2)}</span>
+          </div>
+          <div class="totals-row" style="margin-top: 10px; font-size: 12px;">
+            <span>Payment Method</span>
+            <span>${methodLabels[method]}</span>
+          </div>
+        </div>
+        
+        <div class="footer">
+          <p>${storeFooter}</p>
+        </div>
       </body>
     </html>
   `;
 };
 
 // ─────────────────────────────────────────────
-// SUCCESS OVERLAY
+// SUCCESS OVERLAY WITH PRINTING
 // ─────────────────────────────────────────────
-function SuccessOverlay({ total, method, orderNum, cartItems, subtotal, discountAmt, baristaName, isOffline, onDone }: any) {
+function SuccessOverlay({ total, method, orderNum, cartItems, subtotal, discountAmt, discountLabel, baristaName, isOffline, storeSettings, onDone }: any) {
   const scale = useRef(new Animated.Value(0)).current;
   const fade  = useRef(new Animated.Value(0)).current;
 
@@ -139,34 +223,62 @@ function SuccessOverlay({ total, method, orderNum, cartItems, subtotal, discount
   const methodLabels: Record<PayMethod, string> = { cash: 'Cash', gcash: 'GCash', maya: 'Maya', card: 'Card' };
 
   const handlePrint = async () => {
-    const html = generateReceiptHTML(orderNum, cartItems, subtotal, discountAmt, total, method, baristaName, isOffline);
+    const html = generateReceiptHTML(orderNum, cartItems, subtotal, discountAmt, total, method, baristaName, isOffline, discountLabel, storeSettings);
     try { await Print.printAsync({ html }); } catch (error) { console.error('Print failed:', error); }
   };
 
   const handleShare = async () => {
-    const html = generateReceiptHTML(orderNum, cartItems, subtotal, discountAmt, total, method, baristaName, isOffline);
+    const html = generateReceiptHTML(orderNum, cartItems, subtotal, discountAmt, total, method, baristaName, isOffline, discountLabel, storeSettings);
     try {
       const { uri } = await Print.printToFileAsync({ html });
-      if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+      }
     } catch (error) { console.error('Share failed:', error); }
   };
 
   return (
     <Animated.View style={[so.overlay, { opacity: fade }]}>
       <Animated.View style={[so.card, { transform: [{ scale }] }]}>
-        <TouchableOpacity style={{ position: 'absolute', top: 16, right: 16, padding: 8 }} onPress={onDone}><X size={20} color={C.textMuted} /></TouchableOpacity>
-        <View style={so.iconWrap}><CheckCircle size={52} color={C.successLt} strokeWidth={1.5} /></View>
+        
+        <TouchableOpacity style={{ position: 'absolute', top: 16, right: 16, padding: 8 }} onPress={onDone}>
+          <X size={20} color={C.textMuted} />
+        </TouchableOpacity>
+
+        <View style={so.iconWrap}>
+          <CheckCircle size={52} color={C.successLt} strokeWidth={1.5} />
+        </View>
         <Text style={so.title}>Payment Complete</Text>
         <Text style={so.orderNum}>Order #{orderNum}</Text>
-        <View style={so.amountRow}><Text style={so.amountLabel}>₱</Text><Text style={so.amount}>{total.toFixed(2)}</Text></View>
-        <Text style={so.methodText}>Paid via {methodLabels[method as PayMethod]}</Text>
-        {isOffline && <Text style={{ fontSize: 11, color: C.dangerLt, marginBottom: 20, textAlign: 'center', marginTop: -15 }}>Saved locally. Will sync when online.</Text>}
-        <View style={so.divider} />
-        <View style={so.actionRow}>
-          <TouchableOpacity style={so.actionBtn} onPress={handlePrint}><Printer size={20} color={C.gold} /><Text style={so.actionBtnText}>Print Receipt</Text></TouchableOpacity>
-          <TouchableOpacity style={so.actionBtn} onPress={handleShare}><Share size={20} color={C.gold} /><Text style={so.actionBtnText}>Share e-Receipt</Text></TouchableOpacity>
+        <View style={so.amountRow}>
+          <Text style={so.amountLabel}>₱</Text>
+          <Text style={so.amount}>{total.toFixed(2)}</Text>
         </View>
-        <TouchableOpacity style={so.doneBtn} onPress={onDone}><Text style={so.doneBtnText}>New Order</Text></TouchableOpacity>
+        <Text style={so.methodText}>Paid via {methodLabels[method as PayMethod]}</Text>
+        
+        {isOffline && (
+           <Text style={{ fontSize: 11, color: C.dangerLt, marginBottom: 20, textAlign: 'center', marginTop: -15 }}>
+             Saved locally. Will sync when online.
+           </Text>
+        )}
+        
+        <View style={so.divider} />
+        
+        <View style={so.actionRow}>
+          <TouchableOpacity style={so.actionBtn} onPress={handlePrint}>
+            <Printer size={20} color={C.gold} />
+            <Text style={so.actionBtnText}>Print Receipt</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={so.actionBtn} onPress={handleShare}>
+            <Share size={20} color={C.gold} />
+            <Text style={so.actionBtnText}>Share e-Receipt</Text>
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity style={so.doneBtn} onPress={onDone}>
+          <Text style={so.doneBtnText}>New Order</Text>
+        </TouchableOpacity>
+
       </Animated.View>
     </Animated.View>
   );
@@ -201,21 +313,24 @@ export default function CartScreen() {
   const router = useRouter();
 
   const [payMethod,    setPayMethod]    = useState<PayMethod>('cash');
+  const [orderType,    setOrderType]    = useState<'dine-in' | 'takeout'>('dine-in');
   const [processing,   setProcessing]   = useState(false);
-  const [discounts,    setDiscounts]    = useState<Discount[]>([]);
   
-  // Add Discount Form State
-  const [showAddDisc,  setShowAddDisc]  = useState(false);
-  const [newDiscName,  setNewDiscName]  = useState('');
-  const [newDiscPct,   setNewDiscPct]   = useState('');
-  const [discSaving,   setDiscSaving]   = useState(false);
+  // Database State
+  const [discounts,    setDiscounts]    = useState<Discount[]>([]);
+  const [storeSettings, setStoreSettings] = useState<any>(null); // ✨ Added State
+  
+  // Custom One-Off Discount State
+  const [customDiscountName, setCustomDiscountName] = useState<string | null>(null);
+  const [showCustomDisc, setShowCustomDisc] = useState(false);
+  const [customDiscName, setCustomDiscName] = useState('');
+  const [customDiscPct,  setCustomDiscPct]  = useState('');
 
   // ── MANAGER AUTH STATE ──
   const [authVisible, setAuthVisible]   = useState(false);
   const [authPin,     setAuthPin]       = useState('');
   const [authError,   setAuthError]     = useState('');
   const [authLoading, setAuthLoading]   = useState(false);
-  const [authAction,  setAuthAction]    = useState<AuthAction | null>(null);
   
   // ── OFFLINE STATE ──
   const [isOffline, setIsOffline] = useState(false);
@@ -227,7 +342,7 @@ export default function CartScreen() {
   const [paidMethod,   setPaidMethod]   = useState<PayMethod>('cash');
   const [error,        setError]        = useState('');
   
-  // Snapshots
+  // Snapshots for printing so it doesn't clear before printing
   const [cartSnapshot, setCartSnapshot] = useState<any[]>([]);
   const [subtotalSnapshot, setSubtotalSnapshot] = useState(0);
 
@@ -242,35 +357,38 @@ export default function CartScreen() {
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch discounts
+  // Fetch DB discounts and Store Settings ✨
   useEffect(() => {
-    const fetchDiscounts = async () => {
+    const fetchData = async () => {
       if (!isOffline) {
-        const { data, error } = await supabase.from('discounts').select('*').order('percentage', { ascending: false });
-        if (data && !error) setDiscounts(data);
+        // Fetch Discounts
+        const { data: dData, error: dErr } = await supabase.from('discounts').select('*').order('percentage', { ascending: false });
+        if (dData && !dErr) setDiscounts(dData);
+
+        // Fetch Store Settings
+        const { data: sData, error: sErr } = await supabase.from('store_settings').select('*').eq('id', 1).single();
+        if (sData && !sErr) {
+          setStoreSettings(sData);
+          await AsyncStorage.setItem('@crema_store_settings', JSON.stringify(sData)); // Cache for offline
+        }
+      } else {
+        // Offline: Try to load cached store settings
+        const cachedSettings = await AsyncStorage.getItem('@crema_store_settings');
+        if (cachedSettings) {
+          setStoreSettings(JSON.parse(cachedSettings));
+        }
       }
     };
-    fetchDiscounts();
+    fetchData();
   }, [isOffline]);
 
   // ─────────────────────────────────────────────
-  // MANAGER AUTHORIZATION LOGIC
+  // MANAGER AUTHORIZATION LOGIC (ONLY FOR CUSTOM DISCOUNTS)
   // ─────────────────────────────────────────────
-  const executeAuthAction = (action: AuthAction) => {
-    if (action.type === 'apply') {
-      setDiscount(action.pct);
-    } else if (action.type === 'add_new') {
-      setShowAddDisc(true);
-    }
-  };
-
-  const initiateDiscountAuth = (action: AuthAction) => {
-    // If the currently logged-in user IS a manager, bypass the PIN requirement completely
+  const initiateCustomDiscountAuth = () => {
     if (currentUser?.role === 'manager') {
-      executeAuthAction(action);
+      setShowCustomDisc(true);
     } else {
-      // Otherwise, pop up the PIN authorization modal
-      setAuthAction(action);
       setAuthPin('');
       setAuthError('');
       setAuthVisible(true);
@@ -284,7 +402,6 @@ export default function CartScreen() {
       setAuthPin(p => p.slice(0, -1));
       return;
     }
-    
     if (authPin.length >= 4) return;
     
     const nextPin = authPin + val;
@@ -292,51 +409,45 @@ export default function CartScreen() {
     
     if (nextPin.length === 4) {
       setAuthLoading(true);
-      // Verify PIN against manager role
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('pin_code', nextPin)
-        .eq('role', 'manager')
-        .eq('status', 'active')
-        .single();
+      try {
+        const { data, error } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('pin_code', nextPin)
+          .eq('role', 'manager')
+          .eq('status', 'active')
+          .single();
 
-      if (data) {
-        // PIN Correct!
-        if (authAction) executeAuthAction(authAction);
-        setAuthVisible(false);
-      } else {
-        // PIN Incorrect
-        setAuthError('Invalid Manager PIN');
-        setAuthPin(''); // Clear PIN so they can try again
+        if (data) {
+          setAuthVisible(false);
+          setShowCustomDisc(true);
+        } else {
+          setAuthError('Invalid Manager PIN');
+          setAuthPin(''); 
+        }
+      } catch(e) {
+         setAuthError('Network error. Cannot verify PIN offline.');
+         setAuthPin('');
       }
       setAuthLoading(false);
     }
   };
 
-  // ─────────────────────────────────────────────
-  // SAVE NEW DISCOUNT (Requires Auth first)
-  // ─────────────────────────────────────────────
-  const handleSaveDiscount = async () => {
-    if (!newDiscName.trim() || !newDiscPct) return;
-    setDiscSaving(true);
-    const pct = parseFloat(newDiscPct) / 100;
+  const applyCustomDiscount = () => {
+    if (!customDiscName.trim() || !customDiscPct) return;
+    const pct = parseFloat(customDiscPct) / 100;
     
-    if (!isOffline) {
-      const { error: e } = await supabase.from('discounts').insert([{ name: newDiscName.trim(), percentage: pct }]);
-      if (!e) {
-        const { data } = await supabase.from('discounts').select('*').order('percentage', { ascending: false });
-        if (data) setDiscounts(data);
-        setShowAddDisc(false); setNewDiscName(''); setNewDiscPct('');
-      } else {
-        alert("Failed to save discount.");
-      }
-    } else {
-       alert("Cannot save new discounts while offline.");
-    }
-    setDiscSaving(false);
+    setCustomDiscountName(customDiscName.trim());
+    setDiscount(pct);
+    
+    setShowCustomDisc(false);
+    setCustomDiscName('');
+    setCustomDiscPct('');
   };
 
+  // ─────────────────────────────────────────────
+  // CHECKOUT LOGIC
+  // ─────────────────────────────────────────────
   const handleCheckout = async () => {
     if (cart.length === 0) return;
     setProcessing(true); setError('');
@@ -348,7 +459,8 @@ export default function CartScreen() {
       const orderData = { 
          total: finalTotal, 
          barista_id: baristaId,
-         _saleDetails: { payment_method: payMethod, order_type: 'dine-in', tax_amount: 0 }
+         status: 'pending',
+         order_type: orderType
       };
 
       const orderItems = cart.map((item: any) => ({
@@ -360,9 +472,35 @@ export default function CartScreen() {
       }));
 
       // 🔥 OFFLINE-FIRST SUBMISSION 🔥
-      await submitOrder(orderData, orderItems);
+      const orderId = await submitOrder(orderData, orderItems);
       
-      if (!isOffline) syncOutbox();
+      // 2. Submit Sales Data separately so it doesn't break the syncEngine orders insert
+      if (!isOffline && orderId) {
+        try {
+          const { data: sale } = await supabase.from('sales').insert({
+             barista_id: baristaId,
+             total_amount: finalTotal,
+             payment_method: payMethod,
+             order_type: orderType,
+             tax_amount: 0
+          }).select('id').single();
+
+          if (sale) {
+             const saleItems = cart.map((item: any) => ({
+               sale_id: sale.id,
+               product_id: item.id,
+               quantity: item.quantity ?? 1,
+               unit_price: item.base_price,
+               total_item_cost: item.base_price * (item.quantity ?? 1),
+             }));
+             await supabase.from('sale_items').insert(saleItems);
+          }
+        } catch(e) {
+          console.log("Could not save sale data, but order was placed.");
+        }
+        
+        syncOutbox(); // Background sync if we are online
+      }
 
       const shortId = Date.now().toString().slice(-5).toUpperCase();
       
@@ -385,12 +523,16 @@ export default function CartScreen() {
   const handleDone = () => {
     setShowSuccess(false);
     clearCart();
+    setCustomDiscountName(null);
+    setDiscount(0); 
+    setOrderType('dine-in'); 
     router.replace('/pos');
   };
 
-  const activeDiscount = discounts.find(d => d.percentage === discount);
+  const dbDiscountMatch = discounts.find(d => d.percentage === discount);
+  const discountLabel = customDiscountName || dbDiscountMatch?.name || 'Discount';
   const discountAmount = subtotal * discount;
-  const isEmpty        = cart.length === 0;
+  const isEmpty = cart.length === 0;
 
   return (
     <SafeAreaView style={s.root}>
@@ -450,12 +592,27 @@ export default function CartScreen() {
 
                   <View style={s.cartRowMid}>
                     <Text style={s.cartItemName} numberOfLines={1}>{item.name}</Text>
+                    
+                    {/* ✨ SVG Modifiers Map ✨ */}
                     {item.modifiers && item.modifiers.length > 0 && (
-                      <Text style={s.cartItemMods} numberOfLines={2}>
-                        {item.modifiers.map((m: any) => m.name).join(' · ')}
-                      </Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2, marginBottom: 4 }}>
+                        {item.modifiers.map((m: any, mIdx: number) => (
+                          <View key={mIdx} style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                            <ModIcon name={m.name} size={10} color={C.gold} />
+                            <Text style={s.cartItemMods}>{m.name}</Text>
+                          </View>
+                        ))}
+                      </View>
                     )}
-                    {item.note ? <Text style={s.cartItemNote}>📝 {item.note}</Text> : null}
+                    
+                    {/* ✨ SVG Note Map ✨ */}
+                    {item.note ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 4, marginBottom: 2 }}>
+                        <NotebookPen size={10} color={C.textMuted} style={{ marginTop: 2 }} />
+                        <Text style={s.cartItemNote}>{item.note}</Text>
+                      </View>
+                    ) : null}
+
                     <Text style={s.cartItemUnit}>₱{item.base_price.toFixed(2)} each</Text>
                   </View>
 
@@ -470,36 +627,71 @@ export default function CartScreen() {
             })}
           </View>
 
+          {/* ── ORDER TYPE TOGGLE ── */}
+          <View style={s.section}>
+            <Text style={s.sectionTitle}>Order Type</Text>
+            <View style={s.payGrid}>
+              <TouchableOpacity 
+                style={[s.payBtn, orderType === 'dine-in' && s.payBtnActive]} 
+                onPress={() => setOrderType('dine-in')}
+                activeOpacity={0.8}
+              >
+                <Text style={[s.payBtnLabel, orderType === 'dine-in' && { color: C.cream }]}>🍽️ Dine-in</Text>
+                {orderType === 'dine-in' && <View style={s.payCheck}><Check size={10} color={C.cream} strokeWidth={3} /></View>}
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[s.payBtn, orderType === 'takeout' && s.payBtnActive]} 
+                onPress={() => setOrderType('takeout')}
+                activeOpacity={0.8}
+              >
+                <Text style={[s.payBtnLabel, orderType === 'takeout' && { color: C.cream }]}>🛍️ Takeout</Text>
+                {orderType === 'takeout' && <View style={s.payCheck}><Check size={10} color={C.cream} strokeWidth={3} /></View>}
+              </TouchableOpacity>
+            </View>
+          </View>
+
           <View style={s.section}>
             <View style={s.sectionRow}>
               <Text style={s.sectionTitle}>Discount</Text>
-              <TouchableOpacity style={s.addDiscBtn} onPress={() => initiateDiscountAuth({ type: 'add_new' })}>
+              
+              <TouchableOpacity style={s.addDiscBtn} onPress={initiateCustomDiscountAuth}>
                 <Lock size={10} color={C.gold} strokeWidth={3} style={{ marginRight: -2 }} />
                 <Plus size={12} color={C.gold} strokeWidth={3} />
                 <Text style={s.addDiscText}>Add Custom</Text>
               </TouchableOpacity>
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+              
               <TouchableOpacity
                 style={[s.discChip, discount === 0 && s.discChipActive]}
-                onPress={() => setDiscount(0)} // Removing a discount doesn't require PIN
+                onPress={() => { setDiscount(0); setCustomDiscountName(null); }}
               >
                 <X size={12} color={discount === 0 ? C.cream : C.textMuted} />
                 <Text style={[s.discChipText, discount === 0 && { color: C.cream }]}>None</Text>
               </TouchableOpacity>
               
+              {customDiscountName && discount > 0 && !dbDiscountMatch && (
+                 <TouchableOpacity style={[s.discChip, s.discChipActive]} onPress={() => { setDiscount(0); setCustomDiscountName(null); }}>
+                   <Tag size={11} color={C.cream} />
+                   <Text style={[s.discChipText, { color: C.cream }]}>
+                     {customDiscountName} {(discount * 100).toFixed(0)}%
+                   </Text>
+                   <Check size={11} color={C.cream} strokeWidth={3} />
+                 </TouchableOpacity>
+              )}
+
               {discounts.map(d => {
-                const on = discount === d.percentage;
+                const on = discount === d.percentage && !customDiscountName;
                 return (
                   <TouchableOpacity key={d.id} style={[s.discChip, on && s.discChipActive]}
                     onPress={() => {
                       if (on) {
-                        setDiscount(0); // Turn off without PIN
+                        setDiscount(0); 
                       } else {
-                        initiateDiscountAuth({ type: 'apply', pct: d.percentage }); // Require PIN to turn on
+                        setCustomDiscountName(null);
+                        setDiscount(d.percentage);
                       }
                     }}>
-                    {!on && <Lock size={10} color={C.gold} style={{ marginRight: -2 }} />}
                     <Tag size={11} color={on ? C.cream : C.gold} />
                     <Text style={[s.discChipText, on && { color: C.cream }]}>
                       {d.name} {(d.percentage * 100).toFixed(0)}%
@@ -545,7 +737,7 @@ export default function CartScreen() {
               {discount > 0 && (
                 <View style={s.summaryRow}>
                   <Text style={[s.summaryLabel, { color: C.dangerLt }]}>
-                    Discount ({activeDiscount?.name ?? 'Custom'} {(discount * 100).toFixed(0)}%)
+                    Discount ({discountLabel} {(discount * 100).toFixed(0)}%)
                   </Text>
                   <Text style={[s.summaryVal, { color: C.dangerLt }]}>− ₱{discountAmount.toFixed(2)}</Text>
                 </View>
@@ -604,7 +796,7 @@ export default function CartScreen() {
             </View>
             
             <Text style={{ textAlign: 'center', color: C.navy, fontSize: 13, marginBottom: 20 }}>
-              Enter Manager PIN to apply discount
+              Enter Manager PIN to apply a custom discount.
             </Text>
 
             {/* PIN Dots */}
@@ -638,32 +830,32 @@ export default function CartScreen() {
         </View>
       </Modal>
 
-      {/* ── MODAL: ADD CUSTOM DISCOUNT ── */}
-      <Modal visible={showAddDisc} animationType="fade" transparent>
+      {/* ── MODAL: ONE-OFF CUSTOM DISCOUNT ── */}
+      <Modal visible={showCustomDisc} animationType="fade" transparent>
         <View style={m.overlay}>
           <View style={m.card}>
             <View style={m.cardTopBar} />
             <View style={m.header}>
-              <Text style={m.title}>Custom Discount</Text>
-              <TouchableOpacity style={m.closeBtn} onPress={() => setShowAddDisc(false)}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Lock size={16} color={C.gold} />
+                <Text style={m.title}>Custom Discount</Text>
+              </View>
+              <TouchableOpacity style={m.closeBtn} onPress={() => setShowCustomDisc(false)}>
                 <X size={15} color={C.textMuted} />
               </TouchableOpacity>
             </View>
-            <Text style={m.label}>Name / Reason</Text>
+            <Text style={m.label}>Reason / Name</Text>
             <TextInput style={m.input} placeholder="e.g. Spilled Coffee, Friend" placeholderTextColor={C.textDim}
-              value={newDiscName} onChangeText={setNewDiscName} />
+              value={customDiscName} onChangeText={setCustomDiscName} />
             <Text style={m.label}>Percentage (%)</Text>
-            <TextInput style={m.input} placeholder="e.g. 20" keyboardType="numeric"
-              placeholderTextColor={C.textDim} value={newDiscPct} onChangeText={setNewDiscPct} />
+            <TextInput style={m.input} placeholder="e.g. 15" keyboardType="numeric"
+              placeholderTextColor={C.textDim} value={customDiscPct} onChangeText={setCustomDiscPct} />
             <TouchableOpacity
-              style={[m.saveBtn, discSaving && { opacity: 0.55 }]}
-              onPress={handleSaveDiscount}
-              disabled={discSaving}
+              style={m.saveBtn}
+              onPress={applyCustomDiscount}
+              disabled={!customDiscName || !customDiscPct}
             >
-              {discSaving
-                ? <ActivityIndicator color={C.cream} size="small" />
-                : <Text style={m.saveBtnText}>Apply & Save Discount</Text>
-              }
+              <Text style={m.saveBtnText}>Apply to Order</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -677,8 +869,10 @@ export default function CartScreen() {
           cartItems={cartSnapshot}
           subtotal={subtotalSnapshot}
           discountAmt={subtotalSnapshot * discount}
+          discountLabel={discountLabel}
           baristaName={currentUser?.full_name ?? 'Barista'}
           isOffline={isOffline}
+          storeSettings={storeSettings} // ✨ Passed to overlay
           onDone={handleDone}
         />
       )}
@@ -746,9 +940,9 @@ const s = StyleSheet.create({
   cartRowMid:   { flex: 1, minWidth: 0 },
   cartRowRight: { alignItems: 'flex-end', gap: 10, marginLeft: 8 },
   cartItemName: { fontSize: 14, fontWeight: '700', color: C.text, marginBottom: 2 },
-  cartItemMods: { fontSize: 11, fontWeight: '500', color: C.gold, marginBottom: 2, lineHeight: 16 },
-  cartItemNote: { fontSize: 11, color: C.textMuted, marginBottom: 2 },
-  cartItemUnit: { fontSize: 11, color: C.textDim, fontWeight: '500' },
+  cartItemMods: { fontSize: 11, fontWeight: '500', color: C.gold },
+  cartItemNote: { fontSize: 11, color: C.textMuted },
+  cartItemUnit: { fontSize: 11, color: C.textDim, fontWeight: '500', marginTop: 2 },
   cartItemTotal:{ fontSize: 16, fontWeight: '800', color: C.text },
   deleteBtn:    { width: 28, height: 28, borderRadius: 14, backgroundColor: 'rgba(122,46,53,0.12)', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(122,46,53,0.2)' },
 

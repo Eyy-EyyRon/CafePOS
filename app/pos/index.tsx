@@ -6,14 +6,16 @@ import {
   KeyboardAvoidingView,
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import * as Network from 'expo-network'; // <-- Added Network monitoring
-import { supabase } from '../../lib/supabase';
-import { fetchMenuOfflineFirst, syncOutbox } from '../../lib/syncEngine'; // <-- Added Sync Engine
+import * as Network from 'expo-network';
+import { supabase } from '../../.vscode/lib/supabase';
+import { fetchMenuOfflineFirst, syncOutbox } from '../../.vscode/lib/syncEngine';
 import { useCart } from '../../hooks/useCart';
 import {
   LogOut, Search, X, Plus, Minus, ChevronRight,
   ShoppingBag, AlertTriangle, Check, Loader,
-  SlidersHorizontal, Coffee, WifiOff, // <-- Added WifiOff icon
+  SlidersHorizontal, Coffee, WifiOff,
+  // ── Added Lucide Icons for Helpers ──
+  IceCream, CupSoda, Croissant, Droplet, Snowflake, Cloud, Flame, Leaf, Sparkles, GlassWater
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../hooks/useAuth';
@@ -79,30 +81,41 @@ type MenuItem = {
 type SelectedMods = Record<string, ModifierOption[]>;
 
 // ─────────────────────────────────────────────
-// HELPERS
+// HELPERS (Now with SVGs)
 // ─────────────────────────────────────────────
-function modTotal(sel: SelectedMods) {
+export function modTotal(sel: SelectedMods) {
   return Object.values(sel).flat().reduce((s, o) => s + o.price_adjustment, 0);
 }
-function catEmoji(cat: string) {
-  if (cat?.includes('Coffee') || cat?.includes('Hot')) return '☕';
-  if (cat?.includes('Ice'))  return '🍦';
-  if (cat?.includes('Cold')) return '🥤';
-  if (cat?.includes('Past')) return '🥐';
-  return '☕';
+
+export function CatIcon({ cat, size, color, style }: { cat: string, size: number, color: string, style?: any }) {
+  const c = cat ? cat.toLowerCase() : '';
+  
+  let Icon = Coffee;
+  if (c.includes('ice'))  Icon = IceCream;
+  else if (c.includes('cold')) Icon = CupSoda;
+  else if (c.includes('past')) Icon = Croissant;
+
+  return (
+    <View style={style}>
+      <Icon size={size} color={color} strokeWidth={1.5} />
+    </View>
+  );
 }
 
-function getModEmoji(name: string) {
-  const n = name.toLowerCase();
-  if (n.includes('milk') || n.includes('oat') || n.includes('soy') || n.includes('almond')) return '🥛';
-  if (n.includes('sugar') || n.includes('syrup') || n.includes('sweet') || n.includes('caramel') || n.includes('vanilla')) return '🍯';
-  if (n.includes('ice') || n.includes('cold')) return '🧊';
-  if (n.includes('shot') || n.includes('espresso') || n.includes('coffee') || n.includes('roast')) return '☕';
-  if (n.includes('cream') || n.includes('whip') || n.includes('foam')) return '🍦';
-  if (n.includes('hot') || n.includes('warm') || n.includes('extra hot')) return '🔥';
-  if (n.includes('decaf')) return '🌿';
-  if (n.includes('size') || n.includes('large') || n.includes('small') || n.includes('medium') || n.includes('grande') || n.includes('venti')) return '🥤';
-  return '✨';
+export function ModIcon({ name, size, color }: { name: string, size: number, color: string }) {
+  const n = name ? name.toLowerCase() : '';
+  
+  let Icon = Sparkles;
+  if (n.includes('milk') || n.includes('oat') || n.includes('soy') || n.includes('almond')) Icon = GlassWater;
+  else if (n.includes('sugar') || n.includes('syrup') || n.includes('sweet') || n.includes('caramel') || n.includes('vanilla')) Icon = Droplet;
+  else if (n.includes('ice') || n.includes('cold')) Icon = Snowflake;
+  else if (n.includes('shot') || n.includes('espresso') || n.includes('coffee') || n.includes('roast')) Icon = Coffee;
+  else if (n.includes('cream') || n.includes('whip') || n.includes('foam')) Icon = Cloud;
+  else if (n.includes('hot') || n.includes('warm') || n.includes('extra hot')) Icon = Flame;
+  else if (n.includes('decaf')) Icon = Leaf;
+  else if (n.includes('size') || n.includes('large') || n.includes('small') || n.includes('medium') || n.includes('grande') || n.includes('venti')) Icon = CupSoda;
+
+  return <Icon size={size} color={color} strokeWidth={1.5} />;
 }
 
 // ─────────────────────────────────────────────
@@ -156,7 +169,7 @@ function MenuCard({ item, catColor, onPress }: { item: MenuItem; catColor: strin
             ? <Image source={{ uri: item.image_url }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
             : (
               <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
-                <Text style={{ fontSize: isTablet ? 40 : 32 }}>{catEmoji(item.category)}</Text>
+                <CatIcon cat={item.category} size={isTablet ? 40 : 32} color={C.gold} />
               </View>
             )
           }
@@ -257,7 +270,7 @@ function ModifierSidebar({
             <View style={[sb.headerThumb, { backgroundColor: `${catColor}22` }]}>
               {item.image_url
                 ? <Image source={{ uri: item.image_url }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
-                : <Text style={{ fontSize: 26 }}>{catEmoji(item.category)}</Text>
+                : <CatIcon cat={item.category} size={26} color={C.gold} />
               }
             </View>
             <View style={{ flex: 1 }}>
@@ -319,7 +332,7 @@ function ModifierSidebar({
                           </View>
                         )}
                         <View style={[sb.optTileImgWrap, active && { backgroundColor: `${C.gold}25` }]}>
-                          <Text style={sb.optTileEmoji}>{getModEmoji(opt.name)}</Text>
+                          <ModIcon name={opt.name} size={20} color={active ? C.gold : C.textDim} />
                         </View>
                         <Text style={[sb.optTileName, active && sb.optTileNameActive]} numberOfLines={2}>
                           {opt.name}
@@ -397,6 +410,9 @@ export default function POSMenu() {
   const [search,     setSearch]     = useState('');
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState('');
+  
+  // ── QUEUE COUNT STATE ──
+  const [queueCount, setQueueCount] = useState(0);
 
   // ── OFFLINE STATE ──
   const [isOffline, setIsOffline] = useState(false);
@@ -418,25 +434,43 @@ export default function POSMenu() {
       setIsOffline(!(state.isConnected && state.isInternetReachable));
     };
     checkNetwork();
-    const interval = setInterval(checkNetwork, 5000); // Check every 5s
+    const interval = setInterval(checkNetwork, 5000); 
     return () => clearInterval(interval);
   }, []);
+  
+  // ── Fetch Queue Count ──
+  useEffect(() => {
+    const fetchQueueCount = async () => {
+      if (isOffline) return;
+      try {
+        const { count, error } = await supabase
+          .from('orders')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', 'pending');
+        if (!error && count !== null) {
+          setQueueCount(count);
+        }
+      } catch (e) {
+        console.log("Could not fetch queue count");
+      }
+    };
+    
+    // Fetch initially and then poll every 5 seconds
+    fetchQueueCount();
+    const interval = setInterval(fetchQueueCount, 5000);
+    return () => clearInterval(interval);
+  }, [isOffline]);
 
-  // ── Fetch (Offline-First) ──
+  // ── Fetch (Offline-First) Menu ──
   const fetchData = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      // 1. Try to sync outbox first if we happen to be online
       if (!isOffline) {
         await syncOutbox();
       }
 
-      // 2. Fetch the menu items (this uses our smart caching logic)
       const items = await fetchMenuOfflineFirst();
 
-      // 3. We still need to fetch modifiers. 
-      // In a fully robust offline app, you'd cache these inside syncEngine.ts too.
-      // For now, we will try to fetch them, but gracefully fall back to empty arrays if offline.
       let groups: any[] = [];
       let options: any[] = [];
       let itemMods: any[] = [];
@@ -534,12 +568,14 @@ export default function POSMenu() {
           {/* HEADER */}
           <View style={[s.header, isOffline && { paddingTop: 12 }]}>
             <View style={s.headerLogo}>
-              <View style={s.logoGrid}>
-                <View style={s.logoQ}><Text style={s.logoEmoji}>🍦</Text></View>
-                <View style={s.logoQ}><Text style={s.logoEmoji}>☕</Text></View>
-                <View style={s.logoQ}><Text style={s.logoEmoji}>🥤</Text></View>
-                <View style={s.logoQ}><Text style={s.logoEmoji}>☕</Text></View>
+              <View style={s.logoImageWrap}>
+                <Image 
+                  source={require('../../assets/crema.jpg')} 
+                  style={s.logoImage} 
+                  resizeMode="cover" 
+                />
               </View>
+
               <View style={{ flex: 1, paddingRight: 8 }}>
                 <Text style={s.brandLabel}>CREMA POS</Text>
                 <Text style={s.greeting} numberOfLines={1} ellipsizeMode="tail">
@@ -547,8 +583,18 @@ export default function POSMenu() {
                 </Text>
               </View>
             </View>
-            
+
             <View style={{ flexDirection: 'row', gap: 8, flexShrink: 0 }}>
+              
+              <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/pos/queue')}>
+                <Coffee size={16} color={C.textMuted} />
+                {queueCount > 0 && (
+                  <View style={s.queueBadge}>
+                    <Text style={s.queueBadgeText}>{queueCount > 9 ? '9+' : queueCount}</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+              
               <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/settings')}>
                 <SlidersHorizontal size={16} color={C.textMuted} />
               </TouchableOpacity>
@@ -588,7 +634,7 @@ export default function POSMenu() {
                   style={[s.tab, active && { backgroundColor: catColor, borderColor: catColor }]}
                   activeOpacity={0.8}
                 >
-                  {cat !== 'All' && <Text style={{ fontSize: 12, marginRight: 4 }}>{catEmoji(cat)}</Text>}
+                  {cat !== 'All' && <CatIcon cat={cat} size={14} color={active ? C.cream : C.textMuted} style={{ marginRight: 6 }} />}
                   <Text style={[s.tabText, active && { color: C.cream }]}>{cat}</Text>
                 </TouchableOpacity>
               );
@@ -714,15 +760,35 @@ const s = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: 'rgba(184,147,90,0.12)',
   },
   headerLogo:  { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  logoGrid:    { width: 36, height: 36, flexDirection: 'row', flexWrap: 'wrap', gap: 2, backgroundColor: C.gold, borderRadius: 6, padding: 3 },
-  logoQ:       { width: 13, height: 13, backgroundColor: C.navyMid, borderRadius: 2, alignItems: 'center', justifyContent: 'center' },
-  logoEmoji:   { fontSize: 7 },
+  
+  logoImageWrap: {
+    width: 36, 
+    height: 36, 
+    borderRadius: 8, 
+    overflow: 'hidden',
+    backgroundColor: C.navyMid, 
+    borderWidth: 1.5,
+    borderColor: 'rgba(184,147,90,0.4)',
+  },
+  logoImage: {
+    width: '100%',
+    height: '100%',
+  },
+
   brandLabel:  { fontSize: 9, fontWeight: '800', letterSpacing: 2.5, color: C.gold, textTransform: 'uppercase' },
   greeting:    { fontSize: 13, fontWeight: '700', color: C.text, marginTop: 1 },
   iconBtn: { 
     width: 36, height: 36, borderRadius: 18, backgroundColor: 'rgba(44,62,92,0.15)', 
-    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(44,62,92,0.3)' 
+    alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: 'rgba(44,62,92,0.3)',
+    position: 'relative'
   },
+  queueBadge: {
+    position: 'absolute', top: -4, right: -4, backgroundColor: C.danger,
+    width: 16, height: 16, borderRadius: 8, alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1.5, borderColor: C.bg
+  },
+  queueBadgeText: { color: '#FFF', fontSize: 8, fontWeight: '900' },
+  
   searchWrap: {
     flexDirection: 'row', alignItems: 'center', gap: 10, marginHorizontal: 16, marginVertical: 10,
     backgroundColor: 'rgba(44,62,92,0.25)', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 11,

@@ -6,7 +6,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../hooks/useAuth';
-import { supabase } from '../../lib/supabase';
+import { supabase } from '../../.vscode/lib/supabase';
 import {
   Coffee, LogOut, TrendingUp, Package, Users,
   AlertTriangle, ShoppingBag, ArrowRight, RefreshCw,
