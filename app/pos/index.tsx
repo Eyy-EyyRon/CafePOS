@@ -3,18 +3,17 @@ import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
   ScrollView, SafeAreaView, TextInput, Image,
   Animated, Dimensions, StatusBar, Platform,
-  KeyboardAvoidingView,
+  KeyboardAvoidingView, Modal, ActivityIndicator
 } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import * as Network from 'expo-network';
 import { supabase } from '../../.vscode/lib/supabase';
-import { fetchMenuOfflineFirst, syncOutbox } from '../../.vscode/lib/syncEngine';
+import { fetchMenuOfflineFirst, syncOutbox, getOutboxCount } from '../../.vscode/lib/syncEngine';
 import { useCart } from '../../hooks/useCart';
 import {
   LogOut, Search, X, Plus, Minus, ChevronRight,
   ShoppingBag, AlertTriangle, Check, Loader,
-  SlidersHorizontal, Coffee, WifiOff,
-  // ── Added Lucide Icons for Helpers ──
+  SlidersHorizontal, Coffee, WifiOff, Receipt, Wallet, CloudUpload, RefreshCw, // ✨ Added RefreshCw
   IceCream, CupSoda, Croissant, Droplet, Snowflake, Cloud, Flame, Leaf, Sparkles, GlassWater
 } from 'lucide-react-native';
 import { useRouter } from 'expo-router';
@@ -43,6 +42,8 @@ const C = {
   success:    '#2C7A4B',
   danger:     '#7A2E35',
   dangerLt:   '#C07070',
+  orange:     '#E8B960',
+  info:       '#3A6B8A' 
 };
 
 const CAT_COLORS = ['#2C3E5C','#3A6B8A','#7A5030','#4A6B4A','#4A3580','#6B3A5C'];
@@ -81,7 +82,7 @@ type MenuItem = {
 type SelectedMods = Record<string, ModifierOption[]>;
 
 // ─────────────────────────────────────────────
-// HELPERS (Now with SVGs)
+// HELPERS
 // ─────────────────────────────────────────────
 export function modTotal(sel: SelectedMods) {
   return Object.values(sel).flat().reduce((s, o) => s + o.price_adjustment, 0);
@@ -89,22 +90,15 @@ export function modTotal(sel: SelectedMods) {
 
 export function CatIcon({ cat, size, color, style }: { cat: string, size: number, color: string, style?: any }) {
   const c = cat ? cat.toLowerCase() : '';
-  
   let Icon = Coffee;
   if (c.includes('ice'))  Icon = IceCream;
   else if (c.includes('cold')) Icon = CupSoda;
   else if (c.includes('past')) Icon = Croissant;
-
-  return (
-    <View style={style}>
-      <Icon size={size} color={color} strokeWidth={1.5} />
-    </View>
-  );
+  return <View style={style}><Icon size={size} color={color} strokeWidth={1.5} /></View>;
 }
 
 export function ModIcon({ name, size, color }: { name: string, size: number, color: string }) {
   const n = name ? name.toLowerCase() : '';
-  
   let Icon = Sparkles;
   if (n.includes('milk') || n.includes('oat') || n.includes('soy') || n.includes('almond')) Icon = GlassWater;
   else if (n.includes('sugar') || n.includes('syrup') || n.includes('sweet') || n.includes('caramel') || n.includes('vanilla')) Icon = Droplet;
@@ -114,17 +108,14 @@ export function ModIcon({ name, size, color }: { name: string, size: number, col
   else if (n.includes('hot') || n.includes('warm') || n.includes('extra hot')) Icon = Flame;
   else if (n.includes('decaf')) Icon = Leaf;
   else if (n.includes('size') || n.includes('large') || n.includes('small') || n.includes('medium') || n.includes('grande') || n.includes('venti')) Icon = CupSoda;
-
   return <Icon size={size} color={color} strokeWidth={1.5} />;
 }
 
-// ─────────────────────────────────────────────
-// ANIMATED PRESS WRAPPER
-// ─────────────────────────────────────────────
 function Tap({ style, onPress, children, disabled }: any) {
   const sc = useRef(new Animated.Value(1)).current;
   const press = () => {
     if (disabled) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     Animated.sequence([
       Animated.spring(sc, { toValue: 0.94, useNativeDriver: false, speed: 60 }),
       Animated.spring(sc, { toValue: 1,    useNativeDriver: false, speed: 40 }),
@@ -148,6 +139,7 @@ function MenuCard({ item, catColor, onPress }: { item: MenuItem; catColor: strin
   const glow = useRef(new Animated.Value(0)).current;
 
   const handlePress = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     Animated.sequence([
       Animated.spring(sc, { toValue: 0.95, useNativeDriver: false, speed: 60 }),
       Animated.spring(sc, { toValue: 1,    useNativeDriver: false, speed: 40 }),
@@ -194,7 +186,7 @@ function MenuCard({ item, catColor, onPress }: { item: MenuItem; catColor: strin
 }
 
 // ─────────────────────────────────────────────
-// SIDEBAR / BOTTOM SHEET MODIFIER PANEL
+// SIDEBAR MODAL
 // ─────────────────────────────────────────────
 function ModifierSidebar({
   item, categories, selMods, setSelMods, qty, setQty, note, setNote,
@@ -230,6 +222,7 @@ function ModifierSidebar({
   };
 
   const toggleMod = (group: ModifierGroup, opt: ModifierOption) => {
+    Haptics.selectionAsync();
     setSelMods(prev => {
       const cur = prev[group.id] ?? [];
       if (group.multi_select) {
@@ -256,7 +249,7 @@ function ModifierSidebar({
       </Animated.View>
 
       <Animated.View style={panelLayoutStyles}>
-        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'} pointerEvents="box-none">
           
           {!isTablet && (
             <View style={sb.mobileHandleWrap}>
@@ -286,11 +279,11 @@ function ModifierSidebar({
           <View style={sb.qtyBar}>
             <Text style={sb.sectionLabel}>Quantity</Text>
             <View style={sb.qtyRow}>
-              <TouchableOpacity style={sb.qtyBtn} onPress={() => setQty(q => Math.max(1, q - 1))}>
+              <TouchableOpacity style={sb.qtyBtn} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setQty(q => Math.max(1, q - 1)); }}>
                 <Minus size={14} color={C.navyMid} strokeWidth={3} />
               </TouchableOpacity>
               <Text style={sb.qtyNum}>{qty}</Text>
-              <TouchableOpacity style={[sb.qtyBtn, sb.qtyPlus]} onPress={() => setQty(q => q + 1)}>
+              <TouchableOpacity style={[sb.qtyBtn, sb.qtyPlus]} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setQty(q => q + 1); }}>
                 <Plus size={14} color={C.cream} strokeWidth={3} />
               </TouchableOpacity>
             </View>
@@ -324,7 +317,7 @@ function ModifierSidebar({
                         key={opt.id}
                         style={[sb.optTile, active && sb.optTileActive]}
                         onPress={() => toggleMod(group, opt)}
-                        activeOpacity={0.8}
+                        activeOpacity={0.6}
                       >
                         {active && (
                           <View style={sb.optTileCheckBadge}>
@@ -411,32 +404,72 @@ export default function POSMenu() {
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState('');
   
-  // ── QUEUE COUNT STATE ──
+  // ── QUEUE & SYNC STATE ──
   const [queueCount, setQueueCount] = useState(0);
-
-  // ── OFFLINE STATE ──
   const [isOffline, setIsOffline] = useState(false);
+  const [pendingOutboxItems, setPendingOutboxItems] = useState(0); 
+  const [isManualSyncing, setIsManualSyncing] = useState(false); 
 
-  // Sidebar state
   const [selItem,    setSelItem]    = useState<MenuItem | null>(null);
   const [selMods,    setSelMods]    = useState<SelectedMods>({});
   const [note,       setNote]       = useState('');
   const [qty,        setQty]        = useState(1);
 
+  // SHIFT STATE
+  const [shiftId, setShiftId] = useState<string | null>(null);
+  const [showOpenShiftModal, setShowOpenShiftModal] = useState(false);
+  const [showCloseShiftModal, setShowCloseShiftModal] = useState(false);
+  const [startingCash, setStartingCash] = useState('');
+  const [endingCash, setEndingCash] = useState('');
+  const [shiftProcessing, setShiftProcessing] = useState(false);
+  const [shiftError, setShiftError] = useState('');
+
   const { cart, addItem, total } = useCart();
   const { currentUser, logout }  = useAuth();
   const router = useRouter();
 
-  // ── Network Monitor ──
+  // ── Network Monitor & Outbox Check ──
   useEffect(() => {
-    const checkNetwork = async () => {
+    const checkNetworkAndOutbox = async () => {
       const state = await Network.getNetworkStateAsync();
-      setIsOffline(!(state.isConnected && state.isInternetReachable));
+      const offline = !(state.isConnected && state.isInternetReachable);
+      setIsOffline(offline);
+      
+      const outboxCount = await getOutboxCount();
+      setPendingOutboxItems(outboxCount);
+
+      if (!offline && outboxCount > 0 && !isManualSyncing) {
+        await syncOutbox();
+        setPendingOutboxItems(await getOutboxCount());
+      }
     };
-    checkNetwork();
-    const interval = setInterval(checkNetwork, 5000); 
+    
+    checkNetworkAndOutbox();
+    const interval = setInterval(checkNetworkAndOutbox, 5000); 
     return () => clearInterval(interval);
-  }, []);
+  }, [isManualSyncing]);
+
+  // ✨ MANUAL SYNC TRIGGER ✨
+  const handleManualSync = async () => {
+    if (isOffline) return;
+    setIsManualSyncing(true);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      await syncOutbox();
+      const remaining = await getOutboxCount();
+      setPendingOutboxItems(remaining);
+      
+      await fetchData(); // Also fetch latest menu changes
+
+      if (remaining === 0) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsManualSyncing(false);
+    }
+  };
   
   // ── Fetch Queue Count ──
   useEffect(() => {
@@ -455,7 +488,6 @@ export default function POSMenu() {
       }
     };
     
-    // Fetch initially and then poll every 5 seconds
     fetchQueueCount();
     const interval = setInterval(fetchQueueCount, 5000);
     return () => clearInterval(interval);
@@ -465,10 +497,6 @@ export default function POSMenu() {
   const fetchData = useCallback(async () => {
     setLoading(true); setError('');
     try {
-      if (!isOffline) {
-        await syncOutbox();
-      }
-
       const items = await fetchMenuOfflineFirst();
 
       let groups: any[] = [];
@@ -520,7 +548,84 @@ export default function POSMenu() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // ── Fetch Active Shift ──
+  useEffect(() => {
+    const checkShift = async () => {
+      if (!currentUser?.id || isOffline) return; 
+      const { data, error } = await supabase
+        .from('cash_drawer_shifts')
+        .select('id')
+        .eq('barista_id', currentUser.id)
+        .eq('status', 'open')
+        .maybeSingle();
+
+      if (data) {
+        setShiftId(data.id);
+        setShowOpenShiftModal(false);
+      } else {
+        setShiftId(null);
+        setShowOpenShiftModal(true);
+      }
+    };
+    checkShift();
+  }, [currentUser, isOffline]);
+
+  // SHIFT LOGIC
+  const handleOpenShift = async () => {
+    if (!startingCash || isNaN(Number(startingCash)) || Number(startingCash) < 0) {
+      setShiftError('Please enter a valid amount.');
+      return;
+    }
+    setShiftProcessing(true);
+    setShiftError('');
+    try {
+      const { data, error } = await supabase
+        .from('cash_drawer_shifts')
+        .insert([{ barista_id: currentUser?.id, starting_cash: Number(startingCash) }])
+        .select('id')
+        .single();
+
+      if (error) throw error;
+      setShiftId(data.id);
+      setShowOpenShiftModal(false);
+    } catch (e: any) {
+      setShiftError(e.message);
+    } finally {
+      setShiftProcessing(false);
+    }
+  };
+
+  const handleCloseShift = async () => {
+    if (!endingCash || isNaN(Number(endingCash)) || Number(endingCash) < 0) {
+      setShiftError('Please enter the actual cash in the drawer.');
+      return;
+    }
+    setShiftProcessing(true);
+    setShiftError('');
+    try {
+      const { error } = await supabase
+        .from('cash_drawer_shifts')
+        .update({ 
+          status: 'closed', 
+          closed_at: new Date().toISOString(),
+          actual_ending_cash: Number(endingCash) 
+        })
+        .eq('id', shiftId);
+
+      if (error) throw error;
+      
+      setShowCloseShiftModal(false);
+      logout();
+      router.replace('/login');
+    } catch (e: any) {
+      setShiftError(e.message);
+    } finally {
+      setShiftProcessing(false);
+    }
+  };
+
   const openSidebar = (item: MenuItem) => {
+    if (!shiftId && !isOffline) return; 
     setSelItem(item); setSelMods({}); setNote(''); setQty(1);
   };
 
@@ -550,30 +655,35 @@ export default function POSMenu() {
     <SafeAreaView style={s.root}>
       <StatusBar barStyle="light-content" backgroundColor={C.bg} />
 
-      {/* ── OFFLINE BANNER ── */}
-      {isOffline && (
-        <View style={s.offlineBanner}>
-          <WifiOff size={14} color="#FFF" />
-          <Text style={s.offlineText}>
-            No Internet Connection. Orders are saving locally.
-          </Text>
+      {(isOffline || pendingOutboxItems > 0) && (
+        <View style={[s.offlineBanner, !isOffline && pendingOutboxItems > 0 && { backgroundColor: C.info }]}>
+          {isOffline ? (
+            <>
+              <WifiOff size={14} color="#FFF" />
+              <Text style={s.offlineText}>
+                Offline Mode. Saving orders locally.
+              </Text>
+            </>
+          ) : (
+            <>
+              <CloudUpload size={14} color="#FFF" />
+              <Text style={s.offlineText}>
+                {pendingOutboxItems} order{pendingOutboxItems > 1 ? 's' : ''} waiting to sync.
+              </Text>
+            </>
+          )}
         </View>
       )}
 
-      <View style={s.layout}>
+      <View style={[s.layout, (!shiftId && !isOffline) && { opacity: 0.3 }]} pointerEvents={(!shiftId && !isOffline) ? 'none' : 'auto'}>
 
-        {/* ══ LEFT / TOP : Menu area ══ */}
         <View style={s.mainArea}>
 
           {/* HEADER */}
-          <View style={[s.header, isOffline && { paddingTop: 12 }]}>
+          <View style={[s.header, (isOffline || pendingOutboxItems > 0) && { paddingTop: 12 }]}>
             <View style={s.headerLogo}>
               <View style={s.logoImageWrap}>
-                <Image 
-                  source={require('../../assets/crema.jpg')} 
-                  style={s.logoImage} 
-                  resizeMode="cover" 
-                />
+                <Image source={require('../../assets/crema.jpg')} style={s.logoImage} resizeMode="cover" />
               </View>
 
               <View style={{ flex: 1, paddingRight: 8 }}>
@@ -586,6 +696,19 @@ export default function POSMenu() {
 
             <View style={{ flexDirection: 'row', gap: 8, flexShrink: 0 }}>
               
+              {/* ✨ NEW PERMANENT SYNC BUTTON ✨ */}
+              <TouchableOpacity 
+                style={[s.iconBtn, isOffline && { opacity: 0.5 }]} 
+                onPress={handleManualSync} 
+                disabled={isManualSyncing || isOffline}
+              >
+                {isManualSyncing ? (
+                  <ActivityIndicator size="small" color={C.textMuted} />
+                ) : (
+                  <RefreshCw size={16} color={C.textMuted} />
+                )}
+              </TouchableOpacity>
+
               <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/pos/queue')}>
                 <Coffee size={16} color={C.textMuted} />
                 {queueCount > 0 && (
@@ -595,11 +718,16 @@ export default function POSMenu() {
                 )}
               </TouchableOpacity>
               
+              <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/pos/history')}>
+                <Receipt size={16} color={C.textMuted} />
+              </TouchableOpacity>
+
+              <TouchableOpacity style={s.iconBtn} onPress={() => setShowCloseShiftModal(true)}>
+                <Wallet size={16} color={C.orange} />
+              </TouchableOpacity>
+              
               <TouchableOpacity style={s.iconBtn} onPress={() => router.push('/settings')}>
                 <SlidersHorizontal size={16} color={C.textMuted} />
-              </TouchableOpacity>
-              <TouchableOpacity style={[s.iconBtn, { backgroundColor: 'rgba(122,46,53,0.15)', borderColor: 'rgba(122,46,53,0.2)' }]} onPress={() => { logout(); router.replace('/login'); }}>
-                <LogOut size={16} color={C.dangerLt} />
               </TouchableOpacity>
             </View>
           </View>
@@ -614,9 +742,10 @@ export default function POSMenu() {
               value={search}
               onChangeText={setSearch}
             />
+            {/* ✨ SWIPE-TO-CLEAR TEXT BUTTON ✨ */}
             {search.length > 0 && (
-              <TouchableOpacity onPress={() => setSearch('')}>
-                <X size={15} color={C.textDim} />
+              <TouchableOpacity style={s.clearSearchBtn} onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); setSearch(''); }}>
+                <Text style={s.clearSearchText}>Clear</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -630,7 +759,10 @@ export default function POSMenu() {
               return (
                 <TouchableOpacity
                   key={cat}
-                  onPress={() => setSelCat(cat)}
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setSelCat(cat);
+                  }}
                   style={[s.tab, active && { backgroundColor: catColor, borderColor: catColor }]}
                   activeOpacity={0.8}
                 >
@@ -701,8 +833,8 @@ export default function POSMenu() {
       </View>
 
       {/* ══ MODIFIER PANEL WRAPPER ══ */}
-      {selItem && (
-        <View style={StyleSheet.absoluteFillObject} pointerEvents="box-none">
+      {selItem && (shiftId || isOffline) && (
+        <View style={StyleSheet.absoluteFillObject} pointerEvents="auto">
           <ModifierSidebar
             item={selItem}
             categories={categories}
@@ -718,6 +850,77 @@ export default function POSMenu() {
           />
         </View>
       )}
+
+      {/* ── ✨ OPEN SHIFT MODAL ✨ ── */}
+      <Modal visible={showOpenShiftModal && !isOffline} transparent animationType="fade">
+        <View style={m.overlayCenter}>
+          <View style={m.cardCenter}>
+            <View style={m.iconBox}><Wallet size={28} color={C.gold} /></View>
+            <Text style={m.title}>Open Register</Text>
+            <Text style={m.desc}>Verify and enter the starting cash amount in the drawer before taking orders.</Text>
+            
+            <View style={m.inputWrap}>
+              <Text style={m.currency}>₱</Text>
+              <TextInput
+                style={m.cashInput}
+                keyboardType="numeric"
+                placeholder="0.00"
+                placeholderTextColor={C.textDim}
+                value={startingCash}
+                onChangeText={setStartingCash}
+                autoFocus
+              />
+            </View>
+            
+            {shiftError ? <Text style={m.errorText}>{shiftError}</Text> : null}
+
+            <View style={m.actionRow}>
+              <TouchableOpacity style={m.btnSecondary} onPress={() => { logout(); router.replace('/login'); }}>
+                <Text style={m.btnSecondaryText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={m.btnPrimary} onPress={handleOpenShift} disabled={shiftProcessing}>
+                {shiftProcessing ? <ActivityIndicator color="#111A26" /> : <Text style={m.btnPrimaryText}>Start Shift</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── ✨ CLOSE SHIFT MODAL ✨ ── */}
+      <Modal visible={showCloseShiftModal} transparent animationType="fade">
+        <View style={m.overlayCenter}>
+          <View style={m.cardCenter}>
+            <View style={m.iconBox}><LogOut size={28} color={C.dangerLt} /></View>
+            <Text style={m.title}>Close Register</Text>
+            <Text style={m.desc}>Count the drawer. Enter the total actual cash inside to close your shift.</Text>
+            
+            <View style={m.inputWrap}>
+              <Text style={m.currency}>₱</Text>
+              <TextInput
+                style={m.cashInput}
+                keyboardType="numeric"
+                placeholder="0.00"
+                placeholderTextColor={C.textDim}
+                value={endingCash}
+                onChangeText={setEndingCash}
+                autoFocus
+              />
+            </View>
+            
+            {shiftError ? <Text style={m.errorText}>{shiftError}</Text> : null}
+
+            <View style={m.actionRow}>
+              <TouchableOpacity style={m.btnSecondary} onPress={() => setShowCloseShiftModal(false)}>
+                <Text style={m.btnSecondaryText}>Go Back</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[m.btnPrimary, { backgroundColor: C.dangerLt }]} onPress={handleCloseShift} disabled={shiftProcessing}>
+                {shiftProcessing ? <ActivityIndicator color="#111A26" /> : <Text style={[m.btnPrimaryText, { color: '#FFF' }]}>Close & Logout</Text>}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
@@ -733,24 +936,18 @@ const s = StyleSheet.create({
   layout: { flex: 1 },
   mainArea: { flex: 1 },
   
-  // ── OFFLINE BANNER ──
   offlineBanner: {
     backgroundColor: C.danger,
-    paddingVertical: 6,
+    paddingVertical: 8,
     paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     width: '100%',
-    zIndex: 999, // Ensure it sits above everything
+    zIndex: 999, 
   },
-  offlineText: {
-    color: '#FFF',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
+  offlineText: { color: '#FFF', fontSize: 12, fontWeight: '700', letterSpacing: 0.5 },
 
   header: {
     flexDirection: 'row', alignItems: 'center',
@@ -760,20 +957,8 @@ const s = StyleSheet.create({
     borderBottomWidth: 1, borderBottomColor: 'rgba(184,147,90,0.12)',
   },
   headerLogo:  { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  
-  logoImageWrap: {
-    width: 36, 
-    height: 36, 
-    borderRadius: 8, 
-    overflow: 'hidden',
-    backgroundColor: C.navyMid, 
-    borderWidth: 1.5,
-    borderColor: 'rgba(184,147,90,0.4)',
-  },
-  logoImage: {
-    width: '100%',
-    height: '100%',
-  },
+  logoImageWrap: { width: 36, height: 36, borderRadius: 8, overflow: 'hidden', backgroundColor: C.navyMid, borderWidth: 1.5, borderColor: 'rgba(184,147,90,0.4)' },
+  logoImage: { width: '100%', height: '100%' },
 
   brandLabel:  { fontSize: 9, fontWeight: '800', letterSpacing: 2.5, color: C.gold, textTransform: 'uppercase' },
   greeting:    { fontSize: 13, fontWeight: '700', color: C.text, marginTop: 1 },
@@ -795,6 +980,10 @@ const s = StyleSheet.create({
     borderWidth: 1, borderColor: 'rgba(44,62,92,0.35)',
   },
   searchInput: { flex: 1, fontSize: 14, fontWeight: '500', color: C.text },
+  
+  clearSearchBtn: { paddingVertical: 4, paddingHorizontal: 8, backgroundColor: 'rgba(44,62,92,0.4)', borderRadius: 6 },
+  clearSearchText: { color: '#FFF', fontSize: 11, fontWeight: '700', textTransform: 'uppercase' },
+
   tabRow:        { maxHeight: 42, marginBottom: 10 },
   tabRowContent: { paddingHorizontal: 16, gap: 8, alignItems: 'center' },
   tab: {
@@ -807,6 +996,7 @@ const s = StyleSheet.create({
   loadingText: { fontSize: 14, fontWeight: '500', color: C.textMuted, textAlign: 'center' },
   retryBtn:    { paddingHorizontal: 20, paddingVertical: 10, backgroundColor: C.navyMid, borderRadius: 8, marginTop: 4 },
   retryText:   { fontSize: 13, fontWeight: '700', color: C.cream },
+  
   cartBar: {
     position: 'absolute', bottom: 20, left: 16, right: 16, backgroundColor: C.navyMid,
     borderRadius: 16, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 14, gap: 12,
@@ -819,9 +1009,23 @@ const s = StyleSheet.create({
   cartTotal:     { fontSize: 16, fontWeight: '800', color: C.gold },
 });
 
-// ─────────────────────────────────────────────
-// CARD STYLES
-// ─────────────────────────────────────────────
+const m = StyleSheet.create({
+  overlayCenter: { flex: 1, backgroundColor: 'rgba(10,16,26,0.9)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  cardCenter: { width: '100%', maxWidth: 360, backgroundColor: C.bgCard, borderRadius: 20, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: 'rgba(184,147,90,0.2)' },
+  iconBox: { width: 64, height: 64, borderRadius: 32, backgroundColor: 'rgba(184,147,90,0.1)', alignItems: 'center', justifyContent: 'center', marginBottom: 16 },
+  title: { fontSize: 22, fontWeight: '800', color: C.cream, marginBottom: 8 },
+  desc: { fontSize: 13, color: C.textMuted, textAlign: 'center', lineHeight: 18, marginBottom: 24 },
+  inputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: C.bg, borderWidth: 1, borderColor: 'rgba(184,147,90,0.4)', borderRadius: 12, paddingHorizontal: 20, marginBottom: 24, width: '100%' },
+  currency: { fontSize: 24, fontWeight: '700', color: C.gold, marginRight: 8 },
+  cashInput: { flex: 1, fontSize: 28, fontWeight: '800', color: C.cream, paddingVertical: 16 },
+  errorText: { color: C.dangerLt, fontSize: 12, fontWeight: '600', marginBottom: 16 },
+  actionRow: { flexDirection: 'row', gap: 12, width: '100%' },
+  btnSecondary: { flex: 1, paddingVertical: 14, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(44,62,92,0.5)', alignItems: 'center' },
+  btnSecondaryText: { color: C.textMuted, fontSize: 15, fontWeight: '700' },
+  btnPrimary: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: C.gold, alignItems: 'center' },
+  btnPrimaryText: { color: '#111A26', fontSize: 15, fontWeight: '800' },
+});
+
 const sd = StyleSheet.create({
   card: {
     flex: 1, backgroundColor: C.bgCard, borderRadius: 14, overflow: 'hidden',
@@ -839,9 +1043,6 @@ const sd = StyleSheet.create({
   addBadge:   { width: isTablet ? 30 : 26, height: isTablet ? 30 : 26, borderRadius: 15, backgroundColor: C.navyMid, alignItems: 'center', justifyContent: 'center' },
 });
 
-// ─────────────────────────────────────────────
-// SIDEBAR / MODAL STYLES
-// ─────────────────────────────────────────────
 const PANEL_W = 420;
 
 const sb = StyleSheet.create({
@@ -849,13 +1050,11 @@ const sb = StyleSheet.create({
     position: 'absolute', inset: 0, zIndex: 10,
     backgroundColor: 'rgba(10,16,26,0.65)',
   },
-  // Tablet: Slide in from right
   panelTablet: {
     position: 'absolute', right: 0, top: 0, bottom: 0, width: PANEL_W,
     zIndex: 20, backgroundColor: C.cream,
     shadowColor: '#000', shadowOffset: { width: -6, height: 0 }, shadowOpacity: 0.4, shadowRadius: 20, elevation: 20,
   },
-  // Mobile: Bottom sheet
   panelMobile: {
     position: 'absolute', left: 0, right: 0, bottom: 0, maxHeight: H * 0.9, height: H * 0.85,
     zIndex: 20, backgroundColor: C.cream,
@@ -899,7 +1098,6 @@ const sb = StyleSheet.create({
   multiBadge:  { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 100, backgroundColor: 'rgba(44,62,92,0.08)', borderWidth: 1, borderColor: 'rgba(44,62,92,0.15)' },
   multiText:   { fontSize: 9, fontWeight: '600', color: C.textDim, letterSpacing: 0.5 },
 
-  // ✨ MODIFIER TILES GRID ✨
   optGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   optTile: {
     width: isTablet ? '31%' : '30%', 

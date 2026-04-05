@@ -218,3 +218,19 @@ export async function syncOutbox() {
   // Update the outbox with only the ones that failed (hopefully 0)
   await AsyncStorage.setItem(CACHE_KEYS.OUTBOX, JSON.stringify(failedOrders));
 }
+
+// ─────────────────────────────────────────────
+// 6. OUTBOX UTILITY (Count pending items)
+// ─────────────────────────────────────────────
+export async function getOutboxCount(): Promise<number> {
+  try {
+    const outboxStr = await AsyncStorage.getItem(CACHE_KEYS.OUTBOX);
+    if (!outboxStr) return 0;
+    
+    const outbox = JSON.parse(outboxStr);
+    return Array.isArray(outbox) ? outbox.length : 0;
+  } catch (error) {
+    console.error('Failed to get outbox count:', error);
+    return 0;
+  }
+}
